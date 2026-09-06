@@ -23,19 +23,14 @@ import (
 )
 
 type config struct {
-	appToken     string
-	botToken     string
-	axPath       string
-	workdir      string
-	sessions     string
-	model        string
-	baseURL      string
-	system       string
-	axisURL      string
-	axisUsername string
-	axisPassword string
-	botID        string
-	projectID    string
+	appToken string
+	botToken string
+	axPath   string
+	workdir  string
+	sessions string
+	model    string
+	baseURL  string
+	system   string
 }
 
 type socketOpen struct {
@@ -127,17 +122,12 @@ func main() {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		appToken:     os.Getenv("SLACK_APP_TOKEN"),
-		botToken:     os.Getenv("SLACK_BOT_TOKEN"),
-		axPath:       os.Getenv("SLAXI_AX_PATH"),
-		workdir:      os.Getenv("SLAXI_WORKDIR"),
-		model:        os.Getenv("SLAXI_MODEL"),
-		baseURL:      os.Getenv("SLAXI_BASE_URL"),
-		axisURL:      strings.TrimRight(os.Getenv("SLAXI_AXIS_URL"), "/"),
-		axisUsername: os.Getenv("SLAXI_AXIS_USERNAME"),
-		axisPassword: os.Getenv("SLAXI_AXIS_PASSWORD"),
-		botID:        os.Getenv("SLAXI_BOT_ID"),
-		projectID:    os.Getenv("SLAXI_PROJECT_ID"),
+		appToken: os.Getenv("SLACK_APP_TOKEN"),
+		botToken: os.Getenv("SLACK_BOT_TOKEN"),
+		axPath:   os.Getenv("SLAXI_AX_PATH"),
+		workdir:  os.Getenv("SLAXI_WORKDIR"),
+		model:    os.Getenv("SLAXI_MODEL"),
+		baseURL:  os.Getenv("SLAXI_BASE_URL"),
 	}
 	if cfg.appToken == "" {
 		return cfg, errors.New("SLACK_APP_TOKEN is required")
@@ -145,20 +135,14 @@ func loadConfig() (config, error) {
 	if cfg.botToken == "" {
 		return cfg, errors.New("SLACK_BOT_TOKEN is required")
 	}
-	if cfg.axisURL != "" {
-		if cfg.botID == "" || cfg.projectID == "" {
-			return cfg, errors.New("SLAXI_BOT_ID and SLAXI_PROJECT_ID are required")
-		}
-	} else {
-		if cfg.axPath == "" {
-			cfg.axPath = "ax"
-		}
-		path, err := exec.LookPath(cfg.axPath)
-		if err != nil {
-			return cfg, fmt.Errorf("find ax: %w", err)
-		}
-		cfg.axPath = path
+	if cfg.axPath == "" {
+		cfg.axPath = "ax"
 	}
+	path, err := exec.LookPath(cfg.axPath)
+	if err != nil {
+		return cfg, fmt.Errorf("find ax: %w", err)
+	}
+	cfg.axPath = path
 	if cfg.workdir == "" {
 		workdir, err := os.Getwd()
 		if err != nil {
@@ -304,7 +288,7 @@ func work(cfg config, jobs <-chan job) {
 		if err != nil {
 			log.Printf("progress: %v", err)
 		}
-		reply, artifacts, err := executeJob(cfg, j)
+		reply, err := executeJob(cfg, j)
 		if err != nil {
 			log.Printf("ax: %v", err)
 			reply = "AX failed: " + err.Error()
@@ -325,20 +309,11 @@ func work(cfg config, jobs <-chan job) {
 				break
 			}
 		}
-		for _, artifact := range artifacts {
-			if err := uploadArtifact(cfg, j, artifact); err != nil {
-				log.Printf("artifact: %v", err)
-			}
-		}
 	}
 }
 
-func executeJob(cfg config, j job) (string, []axisArtifact, error) {
-	if cfg.axisURL != "" {
-		return runAxis(cfg, j)
-	}
-	reply, err := runAX(cfg, j)
-	return reply, nil, err
+func executeJob(cfg config, j job) (string, error) {
+	return runAX(cfg, j)
 }
 
 func runAX(cfg config, j job) (string, error) {
@@ -355,7 +330,15 @@ func runAX(cfg config, j job) (string, error) {
 	}
 	args = append(args, j.prompt)
 	cmd := exec.Command(cfg.axPath, args...)
-	cmd.Env = append(os.Environ(), "AX_SLACK_CHANNEL="+j.channel, "AX_SLACK_THREAD="+j.threadTS)
+	env := []string{
+		"AX_SLACK_CHANNEL=" + j.channel,
+		"AX_SLACK_THREAD=" + j.threadTS,
+		"AX_ARTIFACT_DIR=" + filepath.Join(cfg.sessions, j.teamID, j.channel, "artifacts"),
+	}
+	if os.Getenv("AX_WORKSPACE") == "" {
+		env = append(env, "AX_WORKSPACE="+cfg.workdir)
+	}
+	cmd.Env = append(os.Environ(), env...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
