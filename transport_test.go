@@ -235,7 +235,7 @@ func TestServeProcessesEvents(t *testing.T) {
 			}
 		}
 		<-stop
-		conn.Close(websocket.StatusNormalClosure, "")
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}))
 	t.Cleanup(func() {
 		close(stop)

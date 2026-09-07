@@ -221,7 +221,7 @@ func serve(ctx context.Context, cfg config, jobs chan<- job, seen map[string]str
 	if err != nil {
 		return fmt.Errorf("connect socket: %w", err)
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -280,7 +280,7 @@ func openSocket(ctx context.Context, cfg config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open socket: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result socketOpen
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode socket response: %w", err)
@@ -567,7 +567,6 @@ func splitMessage(text string, limit int) []string {
 		}
 		if current != "" {
 			parts = append(parts, current)
-			current = ""
 		}
 		for len([]rune(block)) > limit {
 			runes := []rune(block)
@@ -621,7 +620,7 @@ func slackAPI(cfg config, method string, form url.Values) (slackResponse, error)
 	if err != nil {
 		return result, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return result, err
 	}
