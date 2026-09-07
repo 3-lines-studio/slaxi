@@ -190,9 +190,6 @@ func loadConfig() (config, error) {
 	}
 	cfg.axPath = path
 
-	// ax reads Root/bot.md itself (via -C botRoot), so the host does not pass a
-	// system prompt; the bot instructions live in the one canonical file.
-
 	cfg.workspace = filepath.Join(botRoot, "workspace")
 	cfg.stateAX = filepath.Join(botRoot, "state", "ax", "sessions")
 	cfg.stateSlack = filepath.Join(botRoot, "state", "slack")

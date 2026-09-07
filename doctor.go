@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// doctor validates a bot root for running slaxi. It is read-only and reports
-// exactly which required inputs are missing so setup stops being guesswork.
 func doctor() int {
 	root := os.Getenv("BOT_ROOT")
 	if root == "" {

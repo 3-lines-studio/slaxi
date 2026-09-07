@@ -9,8 +9,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// botConfig is the bot.toml definition read by the slaxi transport consumer.
-// The standard root keys are reserved; unknown keys and tables are ignored.
 type botConfig struct {
 	Model   string     `toml:"model"`
 	BaseURL string     `toml:"base_url"`
@@ -22,8 +20,6 @@ type slackTable struct {
 	MentionOnly bool `toml:"mention_only"`
 }
 
-// loadBotConfig reads Root/bot.toml if present. A missing file is an empty
-// config; an unreadable or invalid file is an error.
 func loadBotConfig(root string) (botConfig, error) {
 	data, err := os.ReadFile(filepath.Join(root, "bot.toml"))
 	if err != nil {
@@ -39,9 +35,6 @@ func loadBotConfig(root string) (botConfig, error) {
 	return bc, nil
 }
 
-// readSecret returns the host-provided secret for name, preferring the env
-// variable envName over the Botdir secrets/<fileName> file. A missing secret
-// yields "" so callers can decide whether that is fatal.
 func readSecret(root, envName, fileName string) (string, error) {
 	if v := os.Getenv(envName); v != "" {
 		return v, nil
