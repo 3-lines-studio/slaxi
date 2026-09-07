@@ -97,7 +97,7 @@ func TestRunAXUsesConfiguredAgent(t *testing.T) {
 	if err := os.WriteFile(ax, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{axPath: ax, workdir: "/work", sessions: filepath.Join(dir, "sessions"), baseURL: "https://api.example/v1", model: "model-a", system: "be direct"}
+	cfg := config{axPath: ax, botRoot: "/work", stateAX: filepath.Join(dir, "sessions"), artifacts: filepath.Join(dir, "artifacts"), baseURL: "https://api.example/v1", model: "model-a", system: "be direct"}
 	reply, err := runAX(cfg, job{teamID: "T1", channel: "C1", threadTS: "1.1", prompt: "fix it"})
 	if err != nil || reply != "done" {
 		t.Fatalf("reply %q: %v", reply, err)
@@ -119,6 +119,144 @@ func TestRunAXUsesConfiguredAgent(t *testing.T) {
 	}
 }
 
+func writeBotFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fakeAX(t *testing.T, dir string) string {
+	t.Helper()
+	ax := filepath.Join(dir, "ax")
+	writeBotFile(t, ax, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(ax, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return ax
+}
+
+func TestLoadConfigBotdir(t *testing.T) {
+	dir := t.TempDir()
+	ax := fakeAX(t, dir)
+	writeBotFile(t, filepath.Join(dir, "bot.toml"), `model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
+tools = ["fsx", "bashx"]
+
+[slack]
+mention_only = false
+`)
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-app-token"), "app-token")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-bot-token"), "bot-token")
+	writeBotFile(t, filepath.Join(dir, "secrets", "api-key"), "api-key")
+	t.Setenv("BOT_ROOT", dir)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.botRoot != dir {
+		t.Fatalf("botRoot %q", cfg.botRoot)
+	}
+	if cfg.appToken != "app-token" || cfg.botToken != "bot-token" {
+		t.Fatalf("tokens %q %q", cfg.appToken, cfg.botToken)
+	}
+	if cfg.model != "deepseek-v4-flash" || cfg.baseURL != "https://api.deepseek.com" {
+		t.Fatalf("model %q baseURL %q", cfg.model, cfg.baseURL)
+	}
+	if cfg.mentionOnly {
+		t.Fatal("mention_only should be false")
+	}
+	if cfg.stateAX != filepath.Join(dir, "state", "ax", "sessions") {
+		t.Fatalf("stateAX %q", cfg.stateAX)
+	}
+	if cfg.workspace != filepath.Join(dir, "workspace") {
+		t.Fatalf("workspace %q", cfg.workspace)
+	}
+	if !pathExists(filepath.Join(dir, "state", "ax", "sessions")) {
+		t.Fatal("state/ax/sessions not created")
+	}
+}
+
+func TestLoadConfigBotdirEnvBeatsFiles(t *testing.T) {
+	dir := t.TempDir()
+	ax := fakeAX(t, dir)
+	t.Setenv("BOT_ROOT", dir)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "env-app")
+	t.Setenv("SLACK_BOT_TOKEN", "env-bot")
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	t.Setenv("SLAXI_MODEL", "env-model")
+	t.Setenv("SLAXI_BASE_URL", "https://env.example/v1")
+	writeBotFile(t, filepath.Join(dir, "bot.toml"), "model = \"bot-model\"\nbase_url = \"https://bot.example/v1\"\n")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-app-token"), "file-app")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-bot-token"), "file-bot")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.appToken != "env-app" || cfg.botToken != "env-bot" {
+		t.Fatalf("env should beat files: %q %q", cfg.appToken, cfg.botToken)
+	}
+	if cfg.model != "env-model" || cfg.baseURL != "https://env.example/v1" {
+		t.Fatalf("env should beat bot.toml: %q %q", cfg.model, cfg.baseURL)
+	}
+}
+
+func TestLoadConfigMentionOnly(t *testing.T) {
+	dir := t.TempDir()
+	ax := fakeAX(t, dir)
+	writeBotFile(t, filepath.Join(dir, "bot.toml"), "model = \"m\"\n[slack]\nmention_only = true\n")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-app-token"), "a")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-bot-token"), "b")
+	writeBotFile(t, filepath.Join(dir, "secrets", "api-key"), "k")
+	t.Setenv("BOT_ROOT", dir)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.mentionOnly {
+		t.Fatal("mention_only should be true")
+	}
+}
+
+func TestLoadConfigMissingSlackSecret(t *testing.T) {
+	dir := t.TempDir()
+	ax := fakeAX(t, dir)
+	t.Setenv("BOT_ROOT", dir)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when slack app token is absent")
+	}
+}
+
+func TestLoadConfigMissingModelKey(t *testing.T) {
+	dir := t.TempDir()
+	ax := fakeAX(t, dir)
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-app-token"), "a")
+	writeBotFile(t, filepath.Join(dir, "secrets", "slack-bot-token"), "b")
+	t.Setenv("BOT_ROOT", dir)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when model api key is absent")
+	}
+}
+
 func TestRunAXUsesThreadSession(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
@@ -130,7 +268,7 @@ func TestRunAXUsesThreadSession(t *testing.T) {
 	if err := os.WriteFile(ax, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{axPath: ax, workdir: "/work", sessions: filepath.Join(dir, "sessions")}
+	cfg := config{axPath: ax, botRoot: "/work", stateAX: filepath.Join(dir, "sessions")}
 	reply, err := runAX(cfg, job{teamID: "T1", channel: "C1", threadTS: "1.1", prompt: "fix it"})
 	if err != nil {
 		t.Fatal(err)

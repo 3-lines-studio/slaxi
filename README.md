@@ -13,26 +13,35 @@ Slack interface for AX. Each Slack thread maps to one persistent AX session.
 
 ## Run
 
-Slaxi runs AX as a subprocess:
+Slaxi is a Botdir consumer. The host starts it from the bot root, and Slaxi runs AX as a subprocess:
 
 ```sh
-SLACK_APP_TOKEN=xapp-... \
-SLACK_BOT_TOKEN=xoxb-... \
-SLAXI_WORKDIR=/path/to/project \
+cd /path/to/bot
 slaxi
 ```
 
-Thread mappings are stored under `~/.config/slaxi/sessions` by default. Set `SLAXI_SESSION_DIR` to change it.
+Slaxi reads `bot.toml` for `model`, `base_url`, and the `[slack]` table (`mention_only`). It reads Slack secrets from the environment (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`) or from `secrets/slack-app-token` and `secrets/slack-bot-token`. It fails readiness when a required Slack or model secret is absent.
+
+Session files live under `state/ax/sessions/<team>/<channel>/<thread>.jsonl`; transport state uses `state/slack/`; generated artifacts go to `workspace/slack/artifacts/`; ephemeral data uses `run/slack/`. The mutable paths are created on start.
 
 ## Variables
 
 ```text
+BOT_ROOT           # bot root anchor (default: current directory)
 SLAXI_AX_PATH
-SLAXI_BASE_URL
-SLAXI_MODEL
-SLAXI_SYSTEM_FILE
-SLAXI_WORKDIR
-SLAXI_SESSION_DIR
+SLAXI_BASE_URL     # overrides bot.toml base_url
+SLAXI_MODEL        # overrides bot.toml model
+```
+
+`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, and `OPENAI_API_KEY` are also read directly from the environment before falling back to `secrets/` files.
+
+## Diagnose
+
+Validate a bot root before starting it — it reports exactly which secrets, the `ax` binary, or `bot.toml` tools are missing:
+
+```sh
+cd /path/to/bot
+slaxi doctor
 ```
 
 ## Test

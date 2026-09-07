@@ -23,14 +23,19 @@ import (
 )
 
 type config struct {
-	appToken string
-	botToken string
-	axPath   string
-	workdir  string
-	sessions string
-	model    string
-	baseURL  string
-	system   string
+	appToken    string
+	botToken    string
+	axPath      string
+	botRoot     string
+	workspace   string
+	stateAX     string
+	stateSlack  string
+	runSlack    string
+	artifacts   string
+	model       string
+	baseURL     string
+	system      string
+	mentionOnly bool
 }
 
 type socketOpen struct {
@@ -72,6 +77,7 @@ type job struct {
 	channel  string
 	threadTS string
 	prompt   string
+	isDM     bool
 }
 
 type slackResponse struct {
@@ -100,6 +106,9 @@ var markdownStrike = regexp.MustCompile(`~~([^~]+)~~`)
 var tableDelimiter = regexp.MustCompile(`^:?-{3,}:?$`)
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		os.Exit(doctor())
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -122,19 +131,56 @@ func main() {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		appToken: os.Getenv("SLACK_APP_TOKEN"),
-		botToken: os.Getenv("SLACK_BOT_TOKEN"),
-		axPath:   os.Getenv("SLAXI_AX_PATH"),
-		workdir:  os.Getenv("SLAXI_WORKDIR"),
-		model:    os.Getenv("SLAXI_MODEL"),
-		baseURL:  os.Getenv("SLAXI_BASE_URL"),
+		axPath:  os.Getenv("SLAXI_AX_PATH"),
+		model:   os.Getenv("SLAXI_MODEL"),
+		baseURL: os.Getenv("SLAXI_BASE_URL"),
 	}
-	if cfg.appToken == "" {
-		return cfg, errors.New("SLACK_APP_TOKEN is required")
+	botRoot := os.Getenv("BOT_ROOT")
+	if botRoot == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return cfg, fmt.Errorf("working directory: %w", err)
+		}
+		botRoot = wd
 	}
-	if cfg.botToken == "" {
-		return cfg, errors.New("SLACK_BOT_TOKEN is required")
+	if absolute, err := filepath.Abs(botRoot); err == nil {
+		botRoot = absolute
 	}
+	cfg.botRoot = botRoot
+
+	bc, err := loadBotConfig(botRoot)
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.model == "" {
+		cfg.model = bc.Model
+	}
+	if cfg.baseURL == "" {
+		cfg.baseURL = bc.BaseURL
+	}
+	cfg.mentionOnly = bc.Slack.MentionOnly
+
+	appToken, err := readSecret(botRoot, "SLACK_APP_TOKEN", "slack-app-token")
+	if err != nil {
+		return cfg, err
+	}
+	if appToken == "" {
+		return cfg, errors.New("slack app token is missing: set SLACK_APP_TOKEN or secrets/slack-app-token")
+	}
+	cfg.appToken = appToken
+	botToken, err := readSecret(botRoot, "SLACK_BOT_TOKEN", "slack-bot-token")
+	if err != nil {
+		return cfg, err
+	}
+	if botToken == "" {
+		return cfg, errors.New("slack bot token is missing: set SLACK_BOT_TOKEN or secrets/slack-bot-token")
+	}
+	cfg.botToken = botToken
+
+	if os.Getenv("OPENAI_API_KEY") == "" && !pathExists(filepath.Join(botRoot, "secrets", "api-key")) {
+		return cfg, errors.New("model api key is missing: set OPENAI_API_KEY or secrets/api-key")
+	}
+
 	if cfg.axPath == "" {
 		cfg.axPath = "ax"
 	}
@@ -143,28 +189,19 @@ func loadConfig() (config, error) {
 		return cfg, fmt.Errorf("find ax: %w", err)
 	}
 	cfg.axPath = path
-	if cfg.workdir == "" {
-		workdir, err := os.Getwd()
-		if err != nil {
-			return cfg, fmt.Errorf("working directory: %w", err)
+
+	// ax reads Root/bot.md itself (via -C botRoot), so the host does not pass a
+	// system prompt; the bot instructions live in the one canonical file.
+
+	cfg.workspace = filepath.Join(botRoot, "workspace")
+	cfg.stateAX = filepath.Join(botRoot, "state", "ax", "sessions")
+	cfg.stateSlack = filepath.Join(botRoot, "state", "slack")
+	cfg.runSlack = filepath.Join(botRoot, "run", "slack")
+	cfg.artifacts = filepath.Join(botRoot, "workspace", "slack", "artifacts")
+	for _, dir := range []string{cfg.workspace, cfg.stateAX, cfg.stateSlack, cfg.runSlack, cfg.artifacts} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return cfg, fmt.Errorf("create %s: %w", dir, err)
 		}
-		cfg.workdir = workdir
-	}
-	systemFile := os.Getenv("SLAXI_SYSTEM_FILE")
-	if systemFile != "" {
-		data, err := os.ReadFile(systemFile)
-		if err != nil {
-			return cfg, fmt.Errorf("read system prompt: %w", err)
-		}
-		cfg.system = strings.TrimSpace(string(data))
-	}
-	cfg.sessions = os.Getenv("SLAXI_SESSION_DIR")
-	if cfg.sessions == "" {
-		root, err := os.UserConfigDir()
-		if err != nil {
-			return cfg, fmt.Errorf("config directory: %w", err)
-		}
-		cfg.sessions = filepath.Join(root, "slaxi", "sessions")
 	}
 	return cfg, nil
 }
@@ -209,6 +246,9 @@ func serve(ctx context.Context, cfg config, jobs chan<- job, seen map[string]str
 		}
 		j, ok := parseJob(env.Payload)
 		if !ok {
+			continue
+		}
+		if cfg.mentionOnly && j.isDM {
 			continue
 		}
 		select {
@@ -266,7 +306,7 @@ func parseJob(data []byte) (job, bool) {
 	if prompt == "" {
 		return job{}, false
 	}
-	return job{payload.TeamID, payload.Event.Channel, threadTS, prompt}, true
+	return job{teamID: payload.TeamID, channel: payload.Event.Channel, threadTS: threadTS, prompt: prompt, isDM: isDM}, true
 }
 
 func safePart(value string) bool {
@@ -317,8 +357,8 @@ func executeJob(cfg config, j job) (string, error) {
 }
 
 func runAX(cfg config, j job) (string, error) {
-	session := filepath.Join(cfg.sessions, j.teamID, j.channel, j.threadTS+".jsonl")
-	args := []string{"--events", "--session", session, "-C", cfg.workdir}
+	session := filepath.Join(cfg.stateAX, j.teamID, j.channel, j.threadTS+".jsonl")
+	args := []string{"--events", "--session", session, "-C", cfg.botRoot}
 	if cfg.baseURL != "" {
 		args = append(args, "-base", cfg.baseURL)
 	}
@@ -333,10 +373,7 @@ func runAX(cfg config, j job) (string, error) {
 	env := []string{
 		"AX_SLACK_CHANNEL=" + j.channel,
 		"AX_SLACK_THREAD=" + j.threadTS,
-		"AX_ARTIFACT_DIR=" + filepath.Join(cfg.sessions, j.teamID, j.channel, "artifacts"),
-	}
-	if os.Getenv("AX_WORKSPACE") == "" {
-		env = append(env, "AX_WORKSPACE="+cfg.workdir)
+		"AX_ARTIFACT_DIR=" + filepath.Join(cfg.artifacts, j.teamID, j.channel),
 	}
 	cmd.Env = append(os.Environ(), env...)
 	stdout, err := cmd.StdoutPipe()
