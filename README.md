@@ -18,12 +18,13 @@ cd /path/to/bot
 slaxi
 ```
 
-It reads `model`, `base_url`, and the `[slack]` table (`mention_only`) from `bot.toml`, and Slack secrets from the environment or `secrets/` files. It fails readiness when a required Slack or model secret is absent. Sessions live under `state/ax/sessions/`; transport state under `state/slack/`; artifacts under `workspace/slack/artifacts/`; ephemeral data under `run/slack/` (created on start).
+It reads `model`, `base_url`, and the `[slack]` table (`mention_only`) from `bot.toml`, and Slack secrets from the environment or `secrets/` files. It fails readiness when a required Slack or model secret is absent. Sessions live under `state/ax/sessions/`; transport state under `state/slack/`; artifacts under `workspace/slack/artifacts/`; ephemeral data under `run/slack/` (created on start). These runtime paths resolve under `BOT_DATA` (default `BOT_ROOT`), while `bot.toml` and `secrets/` stay on `BOT_ROOT`.
 
 ## Variables
 
 ```text
-BOT_ROOT            bot root anchor (default: current directory)
+BOT_ROOT            bot definition root (default: current directory)
+BOT_DATA            bot runtime data root (default: BOT_ROOT)
 SLAXI_AX_PATH
 SLAXI_BASE_URL      overrides bot.toml base_url
 SLAXI_MODEL         overrides bot.toml model

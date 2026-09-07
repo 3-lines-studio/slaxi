@@ -199,11 +199,15 @@ func loadConfig() (config, error) {
 	}
 	cfg.axPath = path
 
-	cfg.workspace = filepath.Join(botRoot, "workspace")
-	cfg.stateAX = filepath.Join(botRoot, "state", "ax", "sessions")
-	cfg.stateSlack = filepath.Join(botRoot, "state", "slack")
-	cfg.runSlack = filepath.Join(botRoot, "run", "slack")
-	cfg.artifacts = filepath.Join(botRoot, "workspace", "slack", "artifacts")
+	runtimeRoot := os.Getenv("BOT_DATA")
+	if runtimeRoot == "" {
+		runtimeRoot = botRoot
+	}
+	cfg.workspace = filepath.Join(runtimeRoot, "workspace")
+	cfg.stateAX = filepath.Join(runtimeRoot, "state", "ax", "sessions")
+	cfg.stateSlack = filepath.Join(runtimeRoot, "state", "slack")
+	cfg.runSlack = filepath.Join(runtimeRoot, "run", "slack")
+	cfg.artifacts = filepath.Join(runtimeRoot, "workspace", "slack", "artifacts")
 	for _, dir := range []string{cfg.workspace, cfg.stateAX, cfg.stateSlack, cfg.runSlack, cfg.artifacts} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return cfg, fmt.Errorf("create %s: %w", dir, err)

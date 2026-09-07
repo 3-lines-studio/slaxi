@@ -184,6 +184,48 @@ mention_only = false
 	}
 }
 
+func TestLoadConfigBotDataSplit(t *testing.T) {
+	root := t.TempDir()
+	data := t.TempDir()
+	ax := fakeAX(t, root)
+	writeBotFile(t, filepath.Join(root, "bot.toml"), "model = \"m\"\n")
+	writeBotFile(t, filepath.Join(root, "secrets", "slack-app-token"), "app-token")
+	writeBotFile(t, filepath.Join(root, "secrets", "slack-bot-token"), "bot-token")
+	writeBotFile(t, filepath.Join(root, "secrets", "api-key"), "api-key")
+	t.Setenv("BOT_ROOT", root)
+	t.Setenv("BOT_DATA", data)
+	t.Setenv("SLAXI_AX_PATH", ax)
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.botRoot != root {
+		t.Fatalf("botRoot %q, want %q", cfg.botRoot, root)
+	}
+	wantWorkspace := filepath.Join(data, "workspace")
+	if cfg.workspace != wantWorkspace {
+		t.Fatalf("workspace %q, want %q", cfg.workspace, wantWorkspace)
+	}
+	if cfg.stateAX != filepath.Join(data, "state", "ax", "sessions") {
+		t.Fatalf("stateAX %q", cfg.stateAX)
+	}
+	if cfg.runSlack != filepath.Join(data, "run", "slack") {
+		t.Fatalf("runSlack %q", cfg.runSlack)
+	}
+	if cfg.artifacts != filepath.Join(data, "workspace", "slack", "artifacts") {
+		t.Fatalf("artifacts %q", cfg.artifacts)
+	}
+	if info, err := os.Stat(wantWorkspace); err != nil || !info.IsDir() {
+		t.Fatalf("runtime dirs must be created under BOT_DATA: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workspace")); err == nil {
+		t.Fatal("workspace must not be created on the bot root when BOT_DATA is set")
+	}
+}
+
 func TestLoadConfigBotdirEnvBeatsFiles(t *testing.T) {
 	dir := t.TempDir()
 	ax := fakeAX(t, dir)
