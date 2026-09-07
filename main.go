@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -106,25 +106,34 @@ var markdownStrike = regexp.MustCompile(`~~([^~]+)~~`)
 var tableDelimiter = regexp.MustCompile(`^:?-{3,}:?$`)
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		os.Exit(doctor())
 	}
 	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("slaxi: config", "error", err)
+		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	jobs := make(chan job, 64)
 	seen := make(map[string]struct{})
 	go work(cfg, jobs)
+	backoff := time.Second
 	for ctx.Err() == nil {
-		if err := serve(ctx, cfg, jobs, seen); err != nil && ctx.Err() == nil {
-			log.Printf("slack: %v", err)
+		err := serve(ctx, cfg, jobs, seen)
+		if ctx.Err() != nil {
+			break
 		}
+		slog.Warn("slaxi: slack connection lost", "error", err, "retry_in", backoff)
 		select {
 		case <-ctx.Done():
-		case <-time.After(time.Second):
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
 		}
 	}
 }
@@ -220,14 +229,19 @@ func serve(ctx context.Context, cfg config, jobs chan<- job, seen map[string]str
 		}
 		var env envelope
 		if err := json.Unmarshal(data, &env); err != nil {
+			slog.Warn("slaxi: malformed envelope", "error", err)
 			continue
 		}
 		if env.EnvelopeID == "" {
 			continue
 		}
-		ack, _ := json.Marshal(struct {
+		ack, err := json.Marshal(struct {
 			EnvelopeID string `json:"envelope_id"`
 		}{env.EnvelopeID})
+		if err != nil {
+			slog.Warn("slaxi: encode ack", "error", err)
+			continue
+		}
 		if err := conn.Write(ctx, websocket.MessageText, ack); err != nil {
 			return fmt.Errorf("ack event: %w", err)
 		}
@@ -251,7 +265,7 @@ func serve(ctx context.Context, cfg config, jobs chan<- job, seen map[string]str
 		select {
 		case jobs <- j:
 		default:
-			log.Printf("drop event %s: queue full", env.EnvelopeID)
+			slog.Warn("slaxi: drop event", "id", env.EnvelopeID, "reason", "queue full")
 		}
 	}
 }
@@ -279,7 +293,8 @@ func openSocket(ctx context.Context, cfg config) (string, error) {
 
 func parseJob(data []byte) (job, bool) {
 	var payload eventPayload
-	if json.Unmarshal(data, &payload) != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
+		slog.Warn("slaxi: malformed event payload", "error", err)
 		return job{}, false
 	}
 	event := payload.Event
@@ -323,11 +338,11 @@ func work(cfg config, jobs <-chan job) {
 	for j := range jobs {
 		messageTS, err := postMessage(cfg, j, "Working…")
 		if err != nil {
-			log.Printf("progress: %v", err)
+			slog.Error("slaxi: progress update", "error", err)
 		}
 		reply, err := executeJob(cfg, j)
 		if err != nil {
-			log.Printf("ax: %v", err)
+			slog.Error("slaxi: ax run", "error", err)
 			reply = "AX failed: " + err.Error()
 		}
 		parts := splitMessage(formatMarkdown(reply), 3500)
@@ -337,12 +352,12 @@ func work(cfg config, jobs <-chan job) {
 			_, err = postMessage(cfg, j, parts[0])
 		}
 		if err != nil {
-			log.Printf("reply: %v", err)
+			slog.Error("slaxi: reply", "error", err)
 			continue
 		}
 		for _, part := range parts[1:] {
 			if _, err := postMessage(cfg, j, part); err != nil {
-				log.Printf("reply: %v", err)
+				slog.Error("slaxi: reply", "error", err)
 				break
 			}
 		}
